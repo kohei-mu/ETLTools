@@ -1,104 +1,120 @@
+### Requirements ###
+## Japanese text normalizer
+# !pip install neologdn
+## Japanese tokenizer "GiNZA"
+# !pip install "https://github.com/megagonlabs/ginza/releases/download/latest/ginza-latest.tar.gz"
+## Japanese stop words
+# !wget http://svn.sourceforge.jp/svnroot/slothlib/CSharp/Version1/SlothLib/NLP/Filter/StopWord/word/Japanese.txt
+## Japanese fonts for WordCloud
+# !wget -qO-  https://noto-website-2.storage.googleapis.com/pkgs/NotoSansCJKjp-hinted.zip | bsdtar -xvf- 
+####################
+
 import numpy as np
 import pandas as pd
+import holoviews as hv
+from holoviews import opts
+hv.extension('bokeh')
+from matplotlib import pyplot as plt
+import neologdn
+from wordcloud import WordCloud
+import nltk
+from nltk.corpus import stopwords
+import spacy
 from sklearn.preprocessing import LabelEncoder
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.feature_extraction.text import CountVectorizer
-import nltk
-from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
-from nltk.stem.wordnet import WordNetLemmatizer
-wnl = WordNetLemmatizer()
 
-def tokenizer(sentence):
-    #convert all characters to lowercase
-    lowered = sentence.lower()
-    tokenized = word_tokenize(lowered)
-    lemmas = list(map(wnl.lemmatize, tokenized))
-    return lemmas
+# Stopwords
+stopwords_ja = [i.replace('\n','') for i in open('./Japanese.txt','r').readlines()]
+stopwords_en = stopwords.words("english")
 
-def pos_tagger(lemmas):
-    tagged = nltk.pos_tag(lemmas)
-    return tagged
+# Spacy Models (Japanese / English)
+nlp_ja = spacy.load('ja_ginza')
+nlp_en = spacy.load('en_core_web_sm')
 
-def remove_stop_words(lemmas, st_list=None):
-    stop_words = stopwords.words('english')
-    if st_list:
-        stop_words.extend(st_list)
-    #remove non-alphabetical characters like '(', '.' or '!'
-    alphas = [w for w in lemmas if w.isalpha()]
-    # remove stopwords and words with too short characters
-    sentence_without_stop_words = [r for r in alphas if r not in stop_words and len(r) > 1]
-    return sentence_without_stop_words
 
-def bow_features(docs,_max_features=10):
-    if type(docs) != np.ndarray:
-        docs = np.array(docs)
-    docs_preprocessed = []
-    for doc in docs:
-        if type(doc) == list:
-            doc = " ".join(doc)
-        docs_preprocessed.append(doc)
-    vec_bow = CountVectorizer(token_pattern=u'(?u)\\b\\w+\\b', max_df=1.0, min_df=1, max_features=_max_features, lowercase=True, 
-                              stop_words='english', analyzer='word', ngram_range=(1,2))
-    bow_matrix = vec_bow.fit_transform(docs_preprocessed)
-    bow_df = pd.DataFrame(bow_matrix.toarray(), columns=["BOW_" + n for n in vec_bow.get_feature_names()])
+def ja_preprocess(text):
+    lowered = text.lower()
+    normalized = neologdn.normalize(lowered)
+    tokenized = []
+    for i in nlp_ja(normalized):
+        word = i.lemma_
+        pos = i.pos_
+        if pos in ["NOUN", "ADJ", "VERB", "ADV", "PROPN"] and len(word) > 1 and i.text not in stopwords_ja:
+            tokenized.append(word)
+    preprocessed = " ".join(tokenized)
+    return preprocessed
+
+
+def en_preprocess(text):
+    lowered = text.lower()
+    tokenized = []
+    for i in nlp_en(lowered):
+        word = i.lemma_
+        pos = i.pos_
+        if pos in ["NOUN", "ADJ", "VERB", "ADV", "PROPN"] and len(word) > 1 and i.text not in stopwords_en:
+            tokenized.append(word)
+    return ' '.join(tokenized)
+
+
+def bow_features(text, _max_features=10, _max_ngrams=2):
+    bow = CountVectorizer(max_features=_max_features, ngram_range=(1,_max_ngrams))
+    vec = bow.fit_transform(text).toarray()
+    bow_df = pd.DataFrame(vec, columns=["BOW_" + n for n in bow.get_feature_names()])
     return bow_df
 
-def tfidf_features(docs_tfidf, docs_train=None, docs_test=None, _max_features=10):
-    if type(docs_tfidf) != np.ndarray:
-        docs_tfidf = np.array(docs_tfidf)
-    docs_tfidf_preprocessed = []
-    for doc in docs_tfidf:
-        if type(doc) == list:
-            doc = " ".join(doc)
-        docs_tfidf_preprocessed.append(doc)
-    vec_tfidf = TfidfVectorizer(token_pattern=u'(?u)\\b\\w+\\b', max_df=1.0, min_df=1, max_features=_max_features, norm='l2', 
-                                stop_words='english', lowercase=True, use_idf=True, analyzer='word', ngram_range=(1,2), smooth_idf=True)
-    vec_tfidf.fit(docs_tfidf_preprocessed)
-    if docs_train == None or docs_test == None:
-        tfidf_matrix = vec_tfidf.fit_transform(docs_tfidf_preprocessed)
-        tfidf_df = pd.DataFrame(tfidf_matrix.toarray(), columns=["TFIDF_" + n for n in vec_tfidf.get_feature_names()])
-        return tfidf_df
-    else:
-        tfidf_matrix_train = vec_tfidf.transform(docs_train)
-        tfidf_matrix_test = vec_tfidf.transform(docs_test)
-        tfidf_train = pd.DataFrame(tfidf_matrix_train.toarray(), columns=["TFIDF_" + n for n in vec_tfidf.get_feature_names()])
-        tfidf_test = pd.DataFrame(tfidf_matrix_test.toarray(), columns=["TFIDF_" + n for n in vec_tfidf.get_feature_names()])
-        return tfidf_train, tfidf_test
+
+def tfidf_features(text, _max_features=10, _max_ngrams=2):
+    tfidf = TfidfVectorizer(max_features=_max_features, use_idf=True, ngram_range=(1,_max_ngrams))
+    vec = tfidf.fit_transform(text).toarray()
+    tfidf_df = pd.DataFrame(vec, columns=["TFIDF_" + n for n in tfidf.get_feature_names()])
+    return tfidf_df
+
+
+def ngram_count(text, ngram=1, common_num=30):
+    words =  text.sum().split()
+    dic = nltk.FreqDist(nltk.ngrams(words, ngram)).most_common(common_num)
+    ngram_df = pd.DataFrame(dic, columns=['ngram','count'])
+    ngram_df.index = [' '.join(i) for i in ngram_df.ngram]
+    ngram_df.drop('ngram',axis=1, inplace=True)
+    return ngram_df
+
+
+def wordCloud(text, _max_words=300, _font_path=None, _output_file='wordCloud.png'):
+    wordcloud = WordCloud(background_color='white', width=800, height=600, min_font_size=10, max_words=_max_words, \
+                          collocations=False, min_word_length=2, font_path=_font_path)
+    wordcloud.generate(text.sum())
+    wordcloud.to_file(_output_file)
+    plt.figure(figsize=(15, 10))
+    plt.imshow(wordcloud)
+    plt.show()
+ 
 
 if __name__ == '__main__':
-    base_dir = '../input/testdata/'
-    demotext = 'df_text_eng.csv'
-    data = pd.read_csv(base_dir + demotext)
-    data.drop("Unnamed: 0", axis=1, inplace=True)
-    data.dropna(how='any', inplace=True)
+    # sample dataset : The Kyoto Free Translation Task (KFTT)
+    # http://www.phontron.com/kftt/index.html
+    base_dir = '../input/the-kyoto-free-translation-task-kftt/'
+    ja = [i.rstrip('\n') for i in open(base_dir + 'kyoto-train.ja', 'r').readlines()]
+    en = [i.rstrip('\n') for i in open(base_dir + 'kyoto-train.en', 'r').readlines()]
+    df = pd.DataFrame({"ja":ja, "en":en}).iloc[0:3000,:]
     
-    #TEST : tokenizer
-    sentence = data['blurb'][0]
-    ret = tokenizer(sentence)
-    print(ret)
+    # Japanese PreProcessing
+    df['ja_preprocessed'] = df['ja'].apply(lambda x: ja_preprocess(x))
+    # English PreProcessing
+    df['en_preprocessed'] = df['en'].apply(lambda x: en_preprocess(x))
     
-    #TEST : pos_tagger
-    ret2 = pos_tagger(ret)
-    print(ret2)
+    # English tfidf / bow features
+    en_bow = bow_features(df['en_preprocessed'], _max_features=10, _max_ngrams=1)
+    en_tfidf = tfidf_features(df['en_preprocessed'], _max_features=10, _max_ngrams=1)
     
-    #TEST : remove_stop_words
-    ret3 = remove_stop_words(ret,['go','using'])
-    print(ret3)
-    
-    # preprocessing pipeline
-    sentences = data['blurb'][0:10000]
-    sentences_preprocessed = []
-    for sentence in sentences:
-        lemmas = tokenizer(sentence)
-        sentence_without_stop_words = remove_stop_words(lemmas)
-        sentences_preprocessed.append(sentence_without_stop_words)
-        
-    #TEST : tfidf_features
-    ret4 = tfidf_features(docs_tfidf=sentences_preprocessed,_max_features=20)
-    print(ret4)
-    
-    #TEST : bow_features
-    ret5 = bow_features(sentences_preprocessed,20)
-    print(ret5)
-    
+    # English Ngram Count
+    en_ngram = ngram_count(df['en_preprocessed'], ngram=1, common_num=30)
+    # Ngram Count Bar Plot
+    en_ngram_graph = hv.Bars(en_ngram[::-1]) \
+        .opts(opts.Bars(title="Ngram Count", color="red", xlabel="Unigrams", ylabel="Count", width=400, height=600, show_grid=True, invert_axes=True))
+    hv.save(en_ngram_graph, 'en_graph.html')
+
+    # Japanese WordCloud
+    wordCloud(df['ja_preprocessed'], _font_path='NotoSansCJKjp-Regular.otf', _output_file='wordCloud_ja.png')
+    # English WordCloud
+    wordCloud(df['en_preprocessed'], _output_file='wordCloud_en.png')
